@@ -1,0 +1,124 @@
+package heap
+
+import (
+    "fmt"
+    "stringError"
+)
+
+const (
+    heapmax = 1.0*((1 << 63)-1)
+    heapmin  = (-1)*heapmax
+)
+
+type Heap struct {
+    Size    int
+    Items   []float64
+}
+
+
+type IGreater interface {
+    func Greater(a, b interface{}) (bool,error)
+}
+
+type IPriorityQueue interface {
+    func Top() interface{}
+    func Pop() interface{}
+    func Push(interface{})
+    func Empty() bool
+}
+
+
+//adjust $1[s:ln] to be heap
+func Adjust(its []float64, s, ln int) (error){
+    if len(its) < ln {
+        return stringError.StringError(fmt.Sprintf("$3:%d is longer then len of $1", ln))
+    }
+    nchild := 0
+    for ; 2*s + 1 < ln ;s = nchild {
+        nchild = 2 *s +1
+        if nchild < ln -1 && its[nchild + 1 ] > its[nchild] {
+            nchild++
+        }
+        if its[s] < its[nchild] {
+            its[s], its[nchild] = its[nchild], its[s]
+        }else {
+            break
+        }
+    }
+    return nil
+}
+
+func AdjustBack(its []float64, s, ln int) (error) {//s is index, ln is length.when in push, s = ln -1
+    if len(its) < ln {
+        return stringError.StringError(fmt.Sprintf("$3:%d is longer then len of $1", ln))
+    }
+
+    np := (s-1)/2 
+    for ;np >=0 && s>0; np = (s-1)/2 {
+        nchild := 2*np +1
+        if nchild < s && its[nchild +1 ] > its[nchild] {
+            nchild++
+        }
+        if its[np] < its[nchild] {
+            its[np], its[nchild] = its[nchild], its[np]
+        }else {
+            break
+        }
+        s = np
+    }
+    return nil
+}
+
+func (h *Heap)makeHeap() {
+    ln := h.Size
+    for i:= (ln-2)/2; i >=0; i-- {
+        Adjust(h.Items,i,ln) 
+    }
+}
+
+func (h *Heap)Sort() {
+    ln := h.Size
+    for i:=ln-1; i>0; i-- {
+        h.Items[0], h.Items[i] = h.Items[i], h.Items[0]
+        Adjust(h.Items, 0, i)
+    }
+}
+
+func GetHeap(a []float64) *Heap {
+    h := new(Heap)
+    h.Size = len(a)
+    h.Items = a
+    h.makeHeap()
+    return h
+}
+
+func (h *Heap)Top() float64 {
+    return h.Items[0]
+}
+
+func (h *Heap)Pop() float64 {
+    ln := len(h.Items)
+    h.Items[0], h.Items[ln-1] = h.Items[ln-1], h.Items[0]
+    Adjust(h.Items, 0, ln-1)
+    h.Size--
+    return h.Items[ln-1]
+}
+
+func (h *Heap)Push(a float64) {
+    ln := len(h.Items)
+    if ln > h.Size {
+        h.Items[h.Size] = a
+    }else {
+        h.Items = append(h.Items, a)
+    }
+    h.Size++
+    AdjustBack(h.Items, h.Size-1, h.Size)
+}
+
+func (h *Heap)Empty() bool {
+    return h.Size == 0
+}
+    
+
+
+

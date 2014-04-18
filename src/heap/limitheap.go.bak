@@ -1,0 +1,42 @@
+package heap
+
+type LimitHeap struct {
+    capacity    int 
+    size        int
+    Items       []float64
+}
+
+func (lh *LimitHeap)makeHeap() {
+    ln := len(lh.Items)
+    for i:= (ln-1)/2;i>=0; i-- {
+        Adjust(lh.Items, i, ln)
+    }
+}
+
+func (lh *LimitHeap)Push(a float64) {//最大堆，push的目的是为了获得最小元素
+    ln := len(lh.Items)
+    if ln > lh.size {
+        lh.Items[lh.size] = a
+        lh.size++
+        AdjustBack(lh.Items, lh.size-1, lh.size)
+    }else if ln < lh.capacity {
+        lh.Items = append(lh.Items, a)
+        lh.size++
+        AdjustBack(lh.Items, lh.size-1, lh.size)
+    }else {
+        lh.Items[0] = a
+        Adjust(lh.Items, 0, lh.size)
+    }
+}
+
+func (lh *LimitHeap)Pop() float64 {
+    lh.Items[0], lh.Items[size-1] = lh.Items[size-1], lh.Items[0]
+    lh.size--
+    Adjust(lh.Items, 0, lh.size)
+    return lh.Items[lh.size]
+}
+
+
+
+
+

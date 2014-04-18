@@ -1,0 +1,384 @@
+package crfpp
+
+import (
+	"fmt"
+	"io"
+	"lbfgs"
+	"math"
+	"os"
+)
+
+type Group struct {
+	cliquegroup []*Clique
+	features    [][]ID_TYPE
+	template    *Template
+	Set         *FeatureSet
+	fout        []*featureMsgOut
+	expected    []float64
+    lbfgs       *lbfgs.Lbfgs
+    tags        *Tag
+    alpha       []float64
+    learnflag        bool
+
+	obj     float64
+	eval    int64
+	zeroone int64
+
+	chin  chan int
+	chout chan int
+}
+
+type featureMsgIn struct {
+	id   int //id of clique
+	col  int //line num of clique
+	ty   int
+	keys []string
+}
+
+type featureMsgOut struct {
+	id  int
+	col int
+	ty  int
+	f   []ID_TYPE
+}
+
+func (g *Group)SetLearnFlag(b bool) {
+    g.learnflag = b
+}
+
+//read from chan, when read end msg, send msg.id to g.chout
+func (g *Group) SetFeaturesGo(in chan *featureMsgOut) {
+	var d *featureMsgOut
+	var ok bool
+	for {
+		if d, ok = <-in; !ok {
+			break
+		}
+		if d.col != -1 {
+			g.fout = append(g.fout, d)
+		} else {
+			g.chout <- d.id
+		}
+	}
+}
+
+type processEnd interface {
+	processEnd(int) int
+}
+
+//read from chan1, chan2 to match each other
+//chan1 must set flag when its end
+//if all matched, end
+func (g *Group) GenerateEndGo(in1 chan int, in2 chan int, out chan int, ef processEnd) {
+	dt := make(map[int]int, 0)
+	for id := range in1 { //read chan, until read -1
+		if id == -1 {
+			break
+		}
+		dt[id] = dt[id] ^ id
+	}
+
+	for id := range in2 {
+		dt[id] = dt[id] ^ id
+		if ef != nil { //process
+			ef.processEnd(id)
+		}
+		if dt[id] == 0 { //when match each other, delete
+			delete(dt, id)
+		} else {
+			fmt.Println("error: ", id, dt[id])
+            panic("here")
+		}
+
+		if len(dt) == 0 {
+			break
+		}
+	}
+	out <- 1
+}
+
+func (g *Group) ReadCliques(train string) (e error) {
+	f, er := os.Open(train)
+	if er != nil {
+		return er
+	}
+	defer f.Close()
+
+	i := 0
+	min := make(chan *featureMsgIn)
+	mout := make(chan *featureMsgOut)
+	if g.chin == nil {
+		g.chin = make(chan int)
+	}
+	if g.chout == nil {
+		g.chout = make(chan int)
+	}
+	if g.Set == nil {
+		g.Set = GetFeatureSet(g.tags.GetTagNum())
+	}
+
+	go g.Set.GenerateFeatureGo(min, mout, g.learnflag)            //must ensure when min close, close mout and end go
+	go g.SetFeaturesGo(mout)                         //must ensure when mout close, send end msg and end go
+	go g.GenerateEndGo(g.chin, g.chout, g.chin, nil) //must ensure when chin and chout matched, send msg to $3 and end go
+
+	var featureid ID_TYPE = 0
+
+	for {
+		c, err := ReadClique(f, g.tags)
+		if err != nil && err != io.EOF {
+			return err
+		}
+
+		if c == nil || len(c.lines) == 0 {
+			if err == io.EOF {
+				break
+			}
+			continue
+		}
+        c.SetLearnFlag(g.learnflag)
+		c.SetGroup(g)
+		c.SetID(i)                //set clique order
+		c.SetFeatureID(featureid) //clique feature order
+		featureid += ID_TYPE(c.Size() + (c.Size() - 1))
+		g.chin <- i
+		i++
+		g.cliquegroup = append(g.cliquegroup, c)
+		go c.BuildFeatureGo(min, g.template)
+	}
+
+	g.chin <- -1 //send endmsg to g.chin, to end g.GenerateEndGo
+
+	<-g.chin   //here means g.GenerateEndGo end
+	close(min) //when min close, then g.Set.GenerateFeatureGo end ,then g.SetFeatureGo end
+	return nil
+}
+
+func (g *Group) ShrinkFeatures(freq NUM_TYPE) {
+	o2n := g.Set.Shrink(freq)
+//    fmt.Println("old_to_new is ", len(o2n))
+	ln := len(g.fout)
+	g.features = make([][]ID_TYPE, ln)
+//	fmt.Println(ln)
+
+	for _, mo := range g.fout {
+		cid := mo.id
+		col := mo.col
+		cty := mo.ty
+		c := g.cliquegroup[cid]
+		cfid := c.featureid + ID_TYPE(cty*c.size+col)
+		if cty != 0 {
+			cfid += -1
+		}
+//		fmt.Println(cid, c.size, col, cty, c.featureid, cfid)
+
+		sl := make([]ID_TYPE, 0, len(mo.f))
+
+		for _, id := range mo.f {
+			n, ok := o2n[id]
+			if ok {
+				sl = append(sl, n)
+			}
+		}
+		g.features[cfid] = sl
+	}
+	g.fout = nil
+}
+
+func (g *Group) GetFvector(fid ID_TYPE, col, size, ty int) []ID_TYPE {
+	sn := fid + ID_TYPE(ty*size+col)
+	if ty == 1 {
+		sn -= 1
+	}
+	return g.features[sn]
+}
+
+func (g *Group) processEnd(id int) int {
+	c := g.cliquegroup[id]
+//    fmt.Println("add to obj:",id, c.z- c.s)
+	g.obj += c.z - c.s
+	eval := int64(c.Eval())
+	if eval != 0 {
+		g.zeroone += 1
+	}
+	g.eval += eval
+	for k, v := range c.expect {
+		g.expected[k] += v
+	}
+    return 1
+}
+
+func (g *Group) ClearCRF() {
+	g.obj = 0.0
+	g.eval = 0
+	g.zeroone = 0
+	for i := 0; i < len(g.expected); i++ {
+		g.expected[ID_TYPE(i)] = 0.0
+	}
+}
+
+func (g *Group) RunCRF(eta, c float64, numlimit int) ([]float64, error) {
+	alpha := make([]float64, ID_TYPE(g.Set.Size()))
+	old_obj := 0.0
+	g.expected = make([]float64, ID_TYPE(g.Set.Size()))
+
+    fmt.Println(g.Set.Size())
+    fmt.Println("g.expected: ", len(g.expected), cap(g.expected))
+	iter := 0
+	diff := 0.0
+	all := 0
+	converge := 0
+
+    if g.lbfgs == nil {
+        g.lbfgs = new(lbfgs.Lbfgs)
+    }
+
+	for _, cl := range g.cliquegroup {
+		all += cl.Size()
+	}
+
+	for iter = 0; iter < numlimit; iter++ {
+		g.ClearCRF()
+
+		go g.GenerateEndGo(g.chin, g.chout, g.chin, g)
+		for _, cl := range g.cliquegroup {
+			g.chin <- cl.id                 //notice than c will goroutine
+			go cl.CalcCRFGo(alpha, g.chout) //go c.calc, when end,send msg to g.chout
+		}
+		g.chin <- -1 //send end msg to tell EndGo
+		<-g.chin     //when this happend, EngGo exit
+		var i ID_TYPE
+		for i = 0; i < ID_TYPE(len(alpha)); i++ {
+			g.obj += alpha[i] * alpha[i] / (2.0 * c)
+			g.expected[i] += alpha[i] / c
+		}
+
+		if iter == 0 {
+			diff = 1.0
+		} else {
+			diff = math.Abs((old_obj - g.obj) / old_obj)
+		}
+
+		fmt.Println("iter = ", iter, " terr = ", float64(g.eval)/float64(all),
+			" serr = ", float64(g.zeroone)/float64(len(g.cliquegroup)),
+			" act = ", g.Set.Size(),
+			" obj = ", g.obj,
+			" diff = ", diff)
+		old_obj = g.obj
+		if diff < eta {
+			converge += 1
+		} else {
+			converge = 0
+		}
+
+		if converge >= 3 {
+			break
+		}
+
+		n, e := g.lbfgs.Optimize(len(alpha), alpha, g.obj, g.expected, false, c)
+		if e != nil {
+			return nil, e
+		}
+        if n == 0 {
+            fmt.Println("lbfgs return 0")
+            break
+        }
+        fmt.Println(n, alpha)
+	}
+
+	return alpha, nil
+}
+
+func (g *Group) ReadFile(template, train string) (e error) {
+	g.template, e = ReadTemplateFromFile(template)
+	if e != nil {
+		return e
+	}
+//	fmt.Println(g.template)
+
+	g.tags, e = ReadTagFromFile(train)
+	if e != nil {
+		return e
+	}
+    fmt.Println("read ",g.tags.GetTagNum(), " tags")
+
+	e = g.ReadCliques(train)
+	if e != nil {
+		return e
+	}
+ 
+	return nil
+}
+
+func (g *Group) ProcessLearnData(model string, freq int, eta, c float64, numlimit int)(e error) {
+	g.ShrinkFeatures(NUM_TYPE(freq))
+	g.alpha, e = g.RunCRF(eta, c, numlimit)
+	if e != nil {
+		return e
+	}
+    return SaveModel(g, model)
+}
+
+func (g *Group)buildFeatures() {
+	ln := len(g.fout)
+	g.features = make([][]ID_TYPE, ln)
+
+	for _, mo := range g.fout {
+		cid := mo.id
+		col := mo.col
+		cty := mo.ty
+		c := g.cliquegroup[cid]
+		cfid := c.featureid + ID_TYPE(cty*c.size+col)
+		if cty != 0 {
+			cfid += -1
+		}
+		sl := make([]ID_TYPE, len(mo.f))
+        copy(sl, mo.f)
+		g.features[cfid] = sl
+	}
+	g.fout = nil
+}
+
+func (g *Group)calcBest() {
+	g.ClearCRF()
+
+    if g.chin == nil {
+        g.chin = make(chan int)
+    }
+    if g.chout == nil {
+        g.chout = make(chan int)
+    }
+
+	go g.GenerateEndGo(g.chin, g.chout, g.chin, nil)
+	for _, cl := range g.cliquegroup {
+		g.chin <- cl.id                 //notice than c will goroutine
+		go cl.CalcBestGo(g.alpha, g.chout) //go c.calc, when end,send msg to g.chout
+	}
+	g.chin <- -1 //send end msg to tell EndGo
+	<-g.chin     //when this happend, EngGo exit
+}
+
+func (g *Group)getPath() {
+    //pass
+}
+func (g *Group)ProcessTestData() error {
+    g.buildFeatures()
+    g.calcBest()
+    g.getPath()
+}
+
+func GetGroupFromModel(ml *Model ) *Group{
+    g := new(Group)
+    g.template = ml.template
+    g.tags = ml.tags
+    g.Set = ml.set
+    g.alpha = ml.alpha
+    return g
+}
+
+func (g *Group)StartTest(testfile string) error {
+    e := g.ReadCliques(testfile)
+    if e != nil {
+        return e
+    }
+    return g.ProcessTestData()
+}

@@ -1,0 +1,318 @@
+package trie
+
+import (
+    "math"
+    "stringError"
+    "fmt"
+)
+
+type node struct{
+    code        int
+    depth       int
+    left        int
+    right       int
+}
+
+type unit struct {
+    base        ValueNInt
+    check       int
+}
+
+type ValueNInt interface {
+    NInt() int      //return <= 0
+    Value() float64
+}
+
+type ILengthAt interface {
+    Length() int
+    At(int ) int
+}
+
+
+type Trie  struct {
+    array      []unit       //for search
+    key        []ILengthAt  //构建trie使用
+    value      []ValueNInt      //构建trie使用
+
+    next_check_pos  int
+    used       map[int]int         //构建过程中检查该位置是否被占用
+
+}
+
+func (t *Trie)GetArray() []unit {
+    return t.array
+}
+
+func (t *Trie) fetch(p *node,  siblings []*node ) ([]*node) {
+    fmt.Println("In fetch, p is", p, "len vector is ", len(siblings))
+    prev := 0
+
+    for i:=p.left; i < p.right; i++ {
+        if t.key[i].Length() < p.depth {
+            continue
+        }
+
+        cur := 0
+        if t.key[i].Length() != p.depth {
+            cur = t.key[i].At(p.depth) + 1
+        }
+
+        if cur != prev || len(siblings) == 0 {
+            tm := &node{depth: p.depth+1, code:cur, left:i}
+            if len(siblings) != 0 {
+                siblings[len(siblings)-1].right = i
+            }
+            siblings = append(siblings, tm)
+        }
+
+        prev = cur
+    }
+
+    fmt.Println("after fetch, len vector is ", len(siblings))
+    if len(siblings) != 0 {
+        siblings[len(siblings)-1].right = p.right
+    }
+    return siblings
+}
+
+func (t *Trie)resize(s int) {
+    l := len(t.array)
+    if  l < s+1 {
+        n  := 0
+        n0 := int(0.2 * float64(l))
+        n1 := s+1 -l 
+        if n0 < n1 {
+            n = n1 
+        }else {
+            n = n0
+        }
+        
+        p:= make([]unit, n, n)
+        t.array = append(t.array,p...)
+    }
+}
+
+
+func (t *Trie)insert(siblings []*node) Int{
+    begin := 0
+    fmt.Println("now len vector is ", len(siblings))
+    if len(siblings) == 0{
+        panic("here")
+    }
+
+    pos := int( math.Max(float64(siblings[0].code) + 1, float64(t.next_check_pos) )) - 1
+    nonzero_num := 0
+
+    first := false
+
+    //确定当前深度节点的begin
+    for {
+    NEXT:
+        pos++
+        
+        t.resize(pos)
+        if t.array[pos].check !=0 {     //已被占用
+            nonzero_num++
+            continue
+        }else if !first {
+            t.next_check_pos = pos
+            first = true
+        }
+
+        begin = pos - siblings[0].code  //尝试一个begin
+        
+        if _, ok:=t.used[begin]; ok {
+            continue
+        }
+
+        for i:=1; i< len(siblings); i++ {
+            t.resize(begin + siblings[i].code)
+            if t.array[begin + siblings[i].code].check != 0  {
+                goto NEXT
+            }
+        }
+        break
+    }
+
+    if float64(nonzero_num)/float64(pos - t.next_check_pos + 1) >= 0.95 {
+        t.next_check_pos = pos
+    }
+
+    t.used[begin] = 1
+    for i:=0 ;i < len(siblings); i++ {
+        t.array[begin + siblings[i].code].check = begin
+    }
+
+    for i:= 0;i<len(siblings); i++ {
+        newsiblings := make([]*node,0,1)
+        newsiblings = t.fetch(siblings[i], newsiblings)
+        if len(newsiblings) == 0 {
+            t.array[begin + siblings[i].code].base = t.value[siblings[i].left]
+        }else {
+            h := t.insert(newsiblings)
+            t.array[begin+siblings[i].code].base = Float64(h)
+        }
+    }
+
+    return Int(-1*begin)
+}
+
+func (t *Trie)Find(key ILengthAt) (ValueNInt,error) {
+    b := t.array[0].base.NInt()
+    if b< 0 {
+        return ZeroFloatValue, stringError.StringError("trie not Init or Init error")
+    }
+    p := 0
+    for i:= 0; i< key.Length();i++ {
+        p = b + key.At(i) + 1
+
+        if b == t.array[p].check {
+            b = t.array[p].base.NInt()
+        }else {
+            return ZeroFloatValue, stringError.StringError("not found")
+        }
+    }
+    p = b
+    n := t.array[p].base
+    if b == t.array[p].check {
+        return n, nil
+    }
+    return ZeroFloatValue, stringError.StringError("not found")
+}
+
+func (t *Trie)FindString(key string)(ValueNInt, error) {
+    return t.Find(String(key))
+}
+
+func (t *Trie)FindByte(key []byte)(ValueNInt, error) {
+    return t.Find(Byte(key))
+}
+
+func NewTrie() *Trie {
+    t := new(Trie)
+    t.array = make([]unit, 8, 8)
+    return t
+}
+
+func (t *Trie)BuildStringFloat(key []string, values[]float64) error {
+    l := len(key)
+    fmt.Println(l)
+
+    for i:=0; i< l; i++ {
+        t.key = append(t.key, String(key[i]))
+        t.value = append(t.value,Float64(values[i]))
+    }
+
+    root := &node{code:0, depth:0, left:0, right:l}
+
+    t.used = make(map[int]int)
+    t.resize(0)
+    t.array[0].base = Int(-1)
+    siblings := make([]*node,0, 1)
+
+    fmt.Println(len(t.array))
+    fmt.Println(t.key, t.value)
+    siblings = t.fetch(root, siblings)
+    t.insert(siblings)
+
+    t.used = nil
+    return nil
+}
+
+//func (t *Trie)BuildByteFloat(key [][]byte, values[]float64)error {
+//    l := len(key)
+//    for i:=0; i<l ;i++ {
+//        t.key[i] = Byte(key[i])
+//        t.value[i] = Float64(values[i])
+//    }
+//
+//
+//    t.used = make(map[int]int)
+//    t.array[0].base = Int(-1)
+//    siblings := make([]*node, 0)
+//    root := &node{code:0, depth:0, left:0, right:l}
+//    t.fetch(root, siblings)
+//    t.insert(siblings)
+//
+//    t.used = nil
+//    return nil
+//
+//}
+//
+//func (t *Trie)BuildStringInt(key []string, values[]int) error {
+//    l:= len(key)
+//    for i:=0;i<l;i++ {
+//        t.key[i] = String(key[i])
+//        t.value[i] = Int(values[i])
+//    }
+//
+//    t.used = make(map[int]int)
+//    t.array[0].base = Int(-1)
+//    siblings := make([]*node, 0)
+//    root := &node{code:0, depth:0, left:0, right:l}
+//    t.fetch(root, siblings)
+//    t.insert(siblings)
+//
+//    t.used = nil
+//    return nil
+//
+//}
+//func (t *Trie)BuildByteInt(key [][]byte, values[]int) error {
+//    l := len(key)
+//    for i:=0; i<l ;i++ {
+//        t.key[i] = Byte(key[i])
+//        t.value[i] = Int(values[i])
+//    }
+//
+//
+//    t.used = make(map[int]int)
+//    t.array[0].base = Int(-1)
+//    siblings := make([]*node, 0)
+//    root := &node{code:0, depth:0, left:0, right:l}
+//    t.fetch(root, siblings)
+//    t.insert(siblings)
+//
+//    t.used = nil
+//    return nil
+//}
+
+
+var ZeroFloatValue = Float64(0.0)
+var ZeroIntValue = Int(0)
+
+type Int int
+func (a Int) NInt()int {
+    return -1*int(a)
+}
+func (a Int)Value()float64 {
+    return float64(a)
+}
+
+type Float64 float64
+func (f Float64)NInt() int {
+    return int(-1*f)
+}
+func (f Float64)Value() float64 {
+    return float64(f)
+}
+
+type String string
+func (f String)Length() int {
+    return len(f)
+}
+
+func (f String)At(i int ) int {
+    return int(f[i])
+}
+
+type Byte []byte 
+func (f Byte)Length() int {
+    return len(f)
+}
+func (f Byte)At(i int) int {
+    return int(f[i])
+}
+
+
+
+

@@ -1,0 +1,48 @@
+package main
+
+import (
+    "fmt"
+    "strconv"
+    "trie"
+    "sort"
+)
+
+func main() {
+    dt := make(map[string]float64)
+
+    for i:=0; i<20;i++ {
+        k := strconv.Itoa(i)
+        dt[k] = float64(i)
+    }
+
+    t:= new(trie.Trie)
+    keys := make([]string, 0,1)
+    for k,_ := range dt {
+        keys = append(keys, k)
+    }
+
+    sort.Strings(keys)
+    fmt.Println(keys)
+    values := make([]float64,0,1)
+
+    for _,m := range keys {
+        values = append(values, dt[m])
+    }
+
+    fmt.Println(values)
+
+    t.BuildStringFloat(keys, values)
+    d :=t.GetArray()
+    for i,dl := range d {
+        fmt.Println(i, dl)
+    }
+    for _,k:=range keys {
+        b, e:= t.FindString(k)
+        if e != nil{
+            fmt.Println(e)
+        }else {
+            fmt.Println(k, b.Value())
+        }
+    }
+
+}
